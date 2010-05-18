@@ -293,7 +293,7 @@ class LocalDoc(object):
         """ the function processing directory to yeld
         attachments. """
         if os.path.isdir(path):
-            for root, dirs, files in os.walk(path):
+            for root, dirs, files in os.walk(path, topdown=True, followlinks=True):
                 for dirname in dirs:
                     if dirname.startswith('.'):
                         dirs.remove(dirname)
@@ -303,6 +303,8 @@ class LocalDoc(object):
                     for filename in files:
                         if filename.startswith('.'):
                             continue
+                        if os.path.islink(os.path.join(root, filename)):
+                            continue
                         elif self.check_ignore(filename):
                             continue
                         else:
@@ -311,7 +313,7 @@ class LocalDoc(object):
                             if vendor is not None:
                                 name = os.path.join('vendor', vendor, name)
                             name = _replace_backslash(name)
-                            yield (name, filepath)
+                            yield (name, os.path.abspath(filepath))
                 
     def attachments(self):
         """ This function yield a tuple (name, filepath) corresponding
