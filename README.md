@@ -3,6 +3,17 @@
 CouchDB can serve web applications straight from the database. CouchApp is a set of tools and sane defaults for
 creating a CouchDB application.
 
+## What CouchApp offers
+
+Installing CouchApp gives you a tool to create and distribute CouchDB applications. In this sense it's similar
+to django or rails' command line tool.
+
+A CouchApp is simply a set of attachments and functions that will be synced to a CouchDB design document, the 
+CouchApp tool allows you to edit these as files and then /push/ them to your database.
+
+To help you get up and running, the CouchApp tool can generate a vanilla project with some sane defaults.
+
+
 ### Write apps using just JavaScript and HTML
 
 Render HTML documents using JavaScript templates run by CouchDB. You'll get parallelism and cacheability, **using only HTML and JS.** Building standalone CouchDB applications according to correct principles affords you options not found on other platforms.
