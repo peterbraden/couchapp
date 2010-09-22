@@ -12,13 +12,14 @@ import os
 import os.path
 import re
 import webbrowser
-# import json
-try:
-    import json
-except ImportError:
-    import couchapp.simplejson as json
 
-from couchapp.errors import ResourceNotFound
+try:
+    import desktopcouch
+except ImportError:
+    desktopcouch = None
+
+
+from couchapp.errors import ResourceNotFound, AppError
 from couchapp.macros import package_shows, package_views
 from couchapp import util
 
@@ -33,14 +34,16 @@ logger = logging.getLogger(__name__)
 
 class LocalDoc(object):
     
-    def __init__(self, path, create=False, docid=None):
+    def __init__(self, path, create=False, docid=None, is_ddoc=True):
         self.docdir = path
         self.ignores = []
+        self.is_ddoc = is_ddoc
+        
         ignorefile = os.path.join(path, '.couchappignore')
         if os.path.exists(ignorefile):
             # A .couchappignore file is a json file containing a
             # list of regexps for things to skip
-            self.ignores = json.load(open(ignorefile, 'r'))
+            self.ignores = util.json.load(open(ignorefile, 'r'))
         if not docid:
             docid = self.get_id()
         self.docid = docid
@@ -57,13 +60,16 @@ class LocalDoc(object):
         if os.path.exists(idfile):
             docid = util.read(idfile).split("\n")[0].strip()
             if docid: return docid
-        return "_design/%s" % os.path.split(self.docdir)[1]
+        if self.is_ddoc:
+            return "_design/%s" % os.path.split(self.docdir)[1]
+        else:
+            return os.path.split(self.docdir)[1]
         
     def __repr__(self):
         return "<%s (%s/%s)>" % (self.__class__.__name__, self.docdir, self.docid)
         
     def __str__(self):
-        return json.dumps(self.doc())
+        return util.json.dumps(self.doc())
         
     def create(self):
         if not os.path.isdir(self.docdir):
@@ -75,47 +81,78 @@ class LocalDoc(object):
         else:
             logger.info("CouchApp already initialized in %s." % self.docdir)
 
-    def push(self, dbs, noatomic=False, browser=False, force=False):
+    def push(self, dbs, noatomic=False, browser=False, force=False,
+            noindex=False):
         """Push a doc to a list of database `dburls`. If noatomic is true
         each attachments will be sent one by one."""
         for db in dbs:
-            self.olddoc = {}
             if noatomic:
-                doc = self.doc(db, with_attachments=False)
+                doc = self.doc(db, with_attachments=False, force=force)
                 db.save_doc(doc, force_update=True)
-                if 'couchapp' in self.olddoc:
-                    old_signatures = self.olddoc['couchapp'].get('signatures', 
-                                                                {})
-                else:
-                    old_signatures = {}
                 
-                signatures = doc['couchapp'].get('signatures', {})
-                if old_signatures:
-                    for name, signature in old_signatures.items():
-                        cursign = signatures.get(name)
-                        if cursign is not None and cursign != signature:
-                            db.delete_attachment(doc, name)
+                attachments = doc.get('_attachments') or {}
+
                 for name, filepath in self.attachments():
-                    if old_signatures.get(name) != signatures[name] or force:
+                    if name not in attachments:
                         logger.debug("attach %s " % name)
                         db.put_attachment(doc, open(filepath, "r"), 
                                             name=name)
             else:
-                doc = self.doc()
+                doc = self.doc(db, force=force)
                 db.save_doc(doc, force_update=True)
-            indexurl = self.index(db.uri, doc['couchapp'].get('index'))
-            if indexurl:
+            indexurl = self.index(db.raw_uri, doc['couchapp'].get('index'))
+            if indexurl and not noindex:
                 logger.info("Visit your CouchApp here:\n%s" % indexurl)
                 if browser:
-                    webbrowser.open_new_tab(indexurl)            
-                        
-    def doc(self, db=None, with_attachments=True):
+                    self.browse_url(indexurl)
+
+    def browse(self, dbs):
+        for db in dbs:
+            doc = self.doc()
+            indexurl = self.index(db.raw_uri, doc['couchapp'].get('index'))
+            if indexurl:
+                self.browse_url(indexurl)
+
+    def browse_url(self, url):
+        if url.startswith("desktopcouch://"):
+            if not desktopcouch:
+                raise AppError("Desktopcouch isn't available on this"+
+                    "machine. You can't access to %s" % db_string)
+            ctx = desktopcouch.local_files.DEFAULT_CONTEXT
+            bookmark_file = os.path.join(ctx.db_dir, "couchdb.html")
+            try:
+                username, password = re.findall("<!-- !!([^!]+)!!([^!]+)!! -->", 
+                        open(bookmark_file).read())[-1]
+            except ValueError:
+                raise IOError("Bookmark file is corrupt."+
+                        "Username/password are missing.")
+
+            url = "http://%s:%s@localhost:%s/%s" % (username, password,
+                desktopcouch.find_port(), url[15:])
+        webbrowser.open_new_tab(url)
+
+    def attachment_stub(self, name, filepath):
+        att = {}
+        with open(filepath, "rb") as f:
+            re_sp = re.compile('\s')
+            att = {
+                    "data": re_sp.sub('',base64.b64encode(f.read())),
+                    "content_type": ';'.join(filter(None, 
+                                            mimetypes.guess_type(name)))
+            }
+
+        return att 
+
+    def doc(self, db=None, with_attachments=True, force=False):
         """ Function to reetrieve document object from
         document directory. If `with_attachments` is True
         attachments will be included and encoded"""
         
         manifest = []
         objects = {}
+        signatures = {}
+        attachments = {}
+
         self._doc = {'_id': self.docid}
         
         # get designdoc
@@ -123,24 +160,49 @@ class LocalDoc(object):
         
        
         if not 'couchapp' in self._doc:
-             self._doc['couchapp'] = {}
-            
-        signatures = {}
-        attachments = {}
+            self._doc['couchapp'] = {}
+
+        
+        self.olddoc = {}
+        if db is not None:
+            try:
+                self.olddoc = db.open_doc(self._doc['_id'])
+                attachments = self.olddoc.get('_attachments') or {}
+                self._doc.update({'_rev': self.olddoc['_rev']})
+            except ResourceNotFound:
+                self.olddoc = {}
+        
+        if 'couchapp' in self.olddoc:
+            old_signatures = self.olddoc['couchapp'].get('signatures', 
+                                                        {})
+        else:
+            old_signatures = {}
+        
         for name, filepath in self.attachments():
             signatures[name] = util.sign(filepath)
-            if with_attachments:
+            if with_attachments and not old_signatures:
                 logger.debug("attach %s " % name)
-                attachments[name] = {}
-                with open(filepath, "rb") as f:
-                    re_sp = re.compile('\s')
-                    attachments[name]['data'] = re_sp.sub('', 
-                                        base64.b64encode(f.read()))
-                attachments[name]['content_type'] = ';'.join(filter(None, 
-                                            mimetypes.guess_type(name)))
+                attachments[name] = self.attachment_stub(name, filepath) 
+
+        if old_signatures:
+            for name, signature in old_signatures.items():
+                cursign = signatures.get(name)
+                if not cursign:
+                    logger.debug("detach %s " % name)
+                    del attachments[name]
+                elif cursign != signature:
+                    logger.debug("detach %s " % name)
+                    del attachments[name]
+                else:
+                    continue
+            
+            if with_attachments:
+                for name, filepath in self.attachments():
+                    if old_signatures.get(name) != signatures.get(name) or force:
+                        logger.debug("attach %s " % name)
+                        attachments[name] = self.attachment_stub(name, filepath) 
         
-        if with_attachments: 
-            self._doc['_attachments'] = attachments
+        self._doc['_attachments'] = attachments
             
         self._doc['couchapp'].update({
             'manifest': manifest,
@@ -151,7 +213,7 @@ class LocalDoc(object):
         
         if self.docid.startswith('_design/'):  # process macros
             for funs in ['shows', 'lists', 'updates', 'filters', 
-                    'fulltext']:
+                    'spatial']:
                 if funs in self._doc:
                     package_shows(self._doc, self._doc[funs], self.docdir, 
                             objects)
@@ -184,14 +246,11 @@ class LocalDoc(object):
                 self._doc['views'] = views
                 package_views(self._doc,self._doc["views"], self.docdir, 
                         objects)
-        
-        self.olddoc = {}
-        if db is not None:
-            try:
-                self.olddoc = db.open_doc(self._doc['_id'])
-                self._doc.update({'_rev': self.olddoc['_rev']})
-            except ResourceNotFound:
-                pass
+            
+            if "fulltext" in self._doc:
+                package_views(self._doc,self._doc["fulltext"], self.docdir, 
+                        objects)
+
             
         return self._doc
     
@@ -264,7 +323,7 @@ class LocalDoc(object):
                         logger.error("Json invalid in %s" % current_path)           
                 else:
                     try:
-                        content = util.read(current_path)
+                        content = util.read(current_path).strip()
                     except UnicodeDecodeError, e:
                         logger.warning("%s isn't encoded in utf8" % current_path)
                         content = util.read(current_path, utf8=False)
@@ -280,10 +339,10 @@ class LocalDoc(object):
                 
                 # remove extension
                 name, ext = os.path.splitext(name)
-                if name in fields and ext in ('.txt'):
+                if name in fields:
                     logger.warning(
-        "%(name)s is already in properties. Can't add (%(name)s%(ext)s)" % {
-                            "name": name, "ext": ext })
+        "%(name)s is already in properties. Can't add (%(fqn)s)" % {
+                            "name": name, "fqn": rel_path })
                 else:
                     manifest.append(rel_path)
                     fields[name] = content
@@ -330,7 +389,7 @@ class LocalDoc(object):
             yield attachment
         vendordir = os.path.join(self.docdir, 'vendor')
         if not os.path.isdir(vendordir):
-            logger.warning("%s don't exist" % vendordir)
+            logger.debug("%s don't exist" % vendordir)
             return
             
         for name in os.listdir(vendordir):
@@ -345,9 +404,10 @@ class LocalDoc(object):
     def index(self, dburl, index):
         if index is not None:
             return "%s/%s/%s" % (dburl, self.docid, index)
-        else:
-            return  "%s/%s/index.html" % (dburl, self.docid)
+        elif os.path.isfile(os.path.join(self.docdir, "_attachments", 
+                    'index.html')):
+            return "%s/%s/index.html" % (dburl, self.docid)
         return False
         
-def document(path, create=False, docid=None):
-    return LocalDoc(path, create=create, docid=docid)
+def document(path, create=False, docid=None, is_ddoc=True):
+    return LocalDoc(path, create=create, docid=docid, is_ddoc=is_ddoc)

@@ -1,5 +1,11 @@
-python-couchapp (0.6dev-1) karmic; urgency=low
+couchapp (0.7.1-1) karmic; urgency=low
+
+  * new release 
+
+ -- Benoit Chesneau <benoitc@e-engura.org>  Fri, 18 Sept 2010 20:28:00 +0100
+
+couchapp (0.7.0-1) karmic; urgency=low
 
   * Initial release
 
- -- Benoit Chesneau <benoitc@e-engura.org>  Sun, 21 Feb 2010 21:15:53 +0100
+ -- Benoit Chesneau <benoitc@e-engura.org>  Fri, 13 Aug 2010 11:54:00 +0100

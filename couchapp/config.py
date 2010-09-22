@@ -26,6 +26,7 @@ class Config(object):
         ]
     )
     
+
     def __init__(self):
         self.rc_path = util.rcpath()
         self.global_conf = self.load(self.rc_path, self.DEFAULTS)
@@ -125,7 +126,9 @@ class Config(object):
         
     # TODO: add oauth management
     def get_dbs(self, db_string=None):
-        if db_string is not None and db_string.startswith("http://"):
+        db_string = db_string or ''
+        if db_string.startswith("http://") or \
+                db_string.startswith("desktopcouch://"):
             dburls = db_string
         else:
             env = self.conf.get('env', {})
@@ -138,7 +141,7 @@ class Config(object):
             else:
                 dburls = "%s/%s" % (self.DEFAULT_SERVER_URI, db_string)
                 if db_string in env:
-                    dburls = env[db_string].get('db', dburls)    
+                    dburls = env[db_string].get('db', dburls)
         
         if isinstance(dburls, basestring):
             dburls = [dburls]

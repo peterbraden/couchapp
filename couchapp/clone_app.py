@@ -11,11 +11,7 @@ from hashlib import md5
 import logging
 import os
 import os.path
-try:
-    import json
-except ImportError:
-    import couchapp.simplejson as json
-    
+
 from couchapp.errors import AppError
 from couchapp import client
 from couchapp import util
@@ -51,7 +47,7 @@ def clone(source, dest=None, rev=None):
     if not os.path.exists(path):
         os.makedirs(path)
 
-    db = client.Database(dburl[:-1])    
+    db = client.Database(dburl[:-1], create=False)    
     if not rev:
         doc = db.open_doc("_design/%s" % docid)
     else:
@@ -98,7 +94,7 @@ def clone(source, dest=None, rev=None):
                         content = v[last_key]
                     except KeyError:
                         break
-                        
+
 
                     if isinstance(content, basestring):
                         _ref = md5(util.to_bytestring(content)).hexdigest()
@@ -109,7 +105,7 @@ def clone(source, dest=None, rev=None):
                             content = base64.b64decode(content[15:])
 
                     if fname.endswith('.json'):
-                        content = json.dumps(content).encode('utf-8')
+                        content = util.json.dumps(content).encode('utf-8')
 
                     del v[last_key]
 
@@ -223,7 +219,7 @@ def clone(source, dest=None, rev=None):
             if signatures.get(filename) != util.sign(filepath):
                 resp = db.fetch_attachment(docid, filename)
                 with open(filepath, 'wb') as f:
-                    for chunk in resp.body_file:
+                    for chunk in resp.body_stream():
                         f.write(chunk)
                 logger.debug("clone attachment: %s" % filename)
                 

@@ -88,16 +88,19 @@ setup(
     cmdclass=cmdclass,
     
     install_requires = [
-        'setuptools>=0.6b1'
+        'restkit>=2.2.0'
     ],
     
-    options = dict(py2exe={},
+    options = dict(py2exe={'dll_excludes': [ "kernelbase.dll", "powrprof.dll" ]},
                    bdist_mpkg=dict(zipdist=True,
                                    license='LICENSE',
                                    readme='contrib/macosx/Readme.html',
                                    welcome='contrib/macosx/Welcome.html')),
                                    
     entry_points="""
+    [couchapp.extension]
+    autopush=couchapp.ext.autopush
+
     [couchapp.vendor]
     git=couchapp.vendors.backends.git:GitVendor
     hg=couchapp.vendors.backends.hg:HgVendor

@@ -9,13 +9,21 @@ import itertools
 import re
 import types
 
+try:
+    import desktopcouch
+except ImportError:
+    desktopcouch = None
+
+from restkit import Resource, HttpResponse, ResourceError, request
+from restkit import util
+from restkit.util import oauth2 as oauth
+from restkit.filters.oauth2 import OAuthFilter
+
 from couchapp import __version__
 from couchapp.errors import ResourceNotFound, ResourceConflict,\
 PreconditionFailed, RequestFailed, BulkSaveError, Unauthorized, \
 InvalidAttachment
-from couchapp.restkit import Resource, HttpResponse, ResourceError, request
-from couchapp.restkit import util
-import couchapp.simplejson as json
+from couchapp.util import json
 
 USER_AGENT = "couchapp/%s" % __version__
 
@@ -31,7 +39,7 @@ class CouchdbResponse(HttpResponse):
     @property
     def json_body(self):
         try:
-            return json.load(self.body_file)
+            return json.loads(self.body_string())
         except ValueError:
             return self.body
 
@@ -139,10 +147,10 @@ def couchdb_version(server_uri):
     
     return tuple(t)   
 
-class Uuids(CouchdbResource):
+class Uuids(object):
     
     def __init__(self, uri, max_uuids=1000, **client_opts):
-        CouchdbResource.__init__(self, uri=uri, **client_opts)
+        self.res = CouchdbResource( uri=uri, **client_opts)
         self._uuids = []
         self.max_uuids = max_uuids
         
@@ -157,29 +165,54 @@ class Uuids(CouchdbResource):
         
     def fetch_uuids(self):
         count = self.max_uuids - len(self._uuids)
-        resp = self.get('/_uuids', count=count)
+        resp = self.res.get('/_uuids', count=count)
         self._uuids += resp.json_body['uuids']
 
-class Database(CouchdbResource):
+class Database(object):
     """ Object that abstract access to a CouchDB database
     A Database object can act as a Dict object.
     """
     
-    def __init__(self, uri, **client_opts):
-        CouchdbResource.__init__(self, uri=uri, **client_opts)
+    def __init__(self, uri, create=True, **client_opts):
+        if uri.endswith("/"):
+            uri = uri[:-1]
+
+        self.raw_uri = uri
+        if uri.startswith("desktopcouch://"):
+            if not desktopcouch:
+                raise AppError("Desktopcouch isn't available on this"+
+                    "machine. You can't access to %s" % db_string)
+            uri = "http://localhost:%s/%s" % (
+                desktopcouch.find_port(), uri[15:])
+            ctx = desktopcouch.local_files.DEFAULT_CONTEXT
+            oauth_tokens = desktopcouch.local_files.get_oauth_tokens(ctx)
+
+            consumer = oauth.Consumer(oauth_tokens["consumer_key"],
+                    oauth_tokens["consumer_secret"])
+            token = oauth.Token(oauth_tokens["token"],
+                oauth_tokens["token_secret"])
+            
+            oauth_filter = OAuthFilter("*", consumer, token)
+            filters = client_opts.get("filters") or []
+            filters.append(oauth_filter)
+            client_opts["filters"] = filters
+
+        
+        self.res = CouchdbResource(uri=uri, **client_opts)
         self.server_uri, self.dbname = uri.rsplit('/', 1)
         
-        self.uuids = Uuids(self.server_uri)
-        self.version = couchdb_version(self.server_uri)
+        self.uuids = Uuids(self.server_uri, **client_opts)
         
-        if self.uri.endswith("/"):
-            self.uri = self.uri[:-1]
-        
-        # create the db
-        try:
-            self.head()
-        except ResourceNotFound:
-            self.put()
+       
+        if create:
+            # create the db
+            try:
+                self.res.head()
+            except ResourceNotFound:
+                self.res.put()
+
+    def delete(self):
+        self.res.delete()
         
     def info(self):
         """
@@ -189,7 +222,7 @@ class Database(CouchdbResource):
 
         @return: dict
         """
-        return self.get().json_body
+        return self.res.get().json_body
         
     def all_docs(self, **params):
         """
@@ -211,7 +244,7 @@ class Database(CouchdbResource):
         @return: dict, representation of CouchDB document as
          a dict.
         """
-        resp = self.get(escape_docid(docid), **params)
+        resp = self.res.get(escape_docid(docid), **params)
         
         if wrapper is not None:
             if not callable(wrapper):
@@ -245,20 +278,20 @@ class Database(CouchdbResource):
         if '_id' in doc:
             docid = escape_docid(doc['_id'])
             try:
-                resp = self.put(docid, payload=json.dumps(doc), **params)
+                resp = self.res.put(docid, payload=json.dumps(doc), **params)
             except ResourceConflict:
                 if not force_update:
                     raise
                 rev = self.last_rev(doc['_id'])
                 doc['_rev'] = rev
-                resp = self.put(docid, payload=json.dumps(doc), **params)
+                resp = self.res.put(docid, payload=json.dumps(doc), **params)
         else:
             json_doc = json.dumps(doc)
             try:
                 doc['_id'] = self.uuids.next()
-                resp = self.put(doc['_id'], payload=json_doc, **params)
+                resp = self.res.put(doc['_id'], payload=json_doc, **params)
             except ResourceConflict:
-                resp = self.post(payload=json_doc, **params)
+                resp = self.res.post(payload=json_doc, **params)
             
         json_res = resp.json_body
         doc1 = {}
@@ -274,8 +307,14 @@ class Database(CouchdbResource):
 
         @return rev: str, the last revision of document.
         """
-        r = self.head(escape_docid(docid))
-        return r.headers['etag'].strip('"')
+        r = self.res.head(escape_docid(docid))
+        if "etag" in r.headers:
+            # yeah new couchdb handle that
+            return r.headers['etag'].strip('"')
+        # old way ..
+        doc = self.open_doc(docid)
+        return doc['_rev']
+
         
     def delete_doc(self, id_or_doc):
         """ Delete a document
@@ -284,14 +323,14 @@ class Database(CouchdbResource):
         """
         if isinstance(id_or_doc, types.StringType):
             docid = id_or_doc
-            resp = self.delete(escape_docid(id_or_doc), 
+            resp = self.res.delete(escape_docid(id_or_doc), 
                         rev=self.last_rev(id_or_doc))    
         else:
             docid = id_or_doc.get('_id')
             if not docid:
                 raise ValueError('Not valid doc to delete (no doc id)')
             rev = id_or_doc.get('_rev', self.last_rev(docid))
-            resp = self.delete(escape_docid(docid), rev=rev)
+            resp = self.res.delete(escape_docid(docid), rev=rev)
         return resp.json_body
         
     def save_docs(self, docs, all_or_nothing=False, use_uuids=True):
@@ -328,7 +367,7 @@ class Database(CouchdbResource):
             payload["all-or-nothing"] = True
             
         # update docs
-        res = self.post('/_bulk_docs', payload=json.dumps(payload),
+        res = self.res.post('/_bulk_docs', payload=json.dumps(payload),
                     headers={'Content-Type': 'application/json'})
             
         json_res = res.json_body
@@ -367,7 +406,7 @@ class Database(CouchdbResource):
         else:
             docid = id_or_doc['_id']
       
-        return self.get("%s/%s" % (escape_docid(docid), name), headers=headers)
+        return self.res.get("%s/%s" % (escape_docid(docid), name), headers=headers)
         
     def put_attachment(self, doc, content=None, name=None, headers=None):
         """ Add attachement to a document. All attachments are streamed.
@@ -390,7 +429,7 @@ class Database(CouchdbResource):
                 raise InvalidAttachment(
                             'You should provid a valid attachment name')
         name = util.url_quote(name, safe="")
-        res = self.put("%s/%s" % (escape_docid(doc['_id']), name), 
+        res = self.res.put("%s/%s" % (escape_docid(doc['_id']), name), 
                     payload=content, headers=headers, rev=doc['_rev'])
         json_res = res.json_body
         
@@ -407,7 +446,7 @@ class Database(CouchdbResource):
         @return: updated document object
         """
         name = util.url_quote(name, safe="")
-        self.delete("%s/%s" % (escape_docid(doc['_id']), name), 
+        self.res.delete("%s/%s" % (escape_docid(doc['_id']), name), 
                         rev=doc['_rev']).json_body
         return doc.update(self.open_doc(doc['_id']))
         
@@ -420,9 +459,9 @@ class Database(CouchdbResource):
 
         if "keys" in params:
             keys = params.pop("keys")
-            return self.post(path, json.dumps({"keys": keys}, **params)).json_body
+            return self.res.post(path, json.dumps({"keys": keys}, **params)).json_body
 
-        return self.get(path, **params).json_body
+        return self.res.get(path, **params).json_body
 
 def encode_params(params):
     """ encode parameters in json if needed """

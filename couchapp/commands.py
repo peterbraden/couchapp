@@ -5,10 +5,12 @@
 
 import logging
 import os
+
 try:
-    import json
+    import desktopcouch
 except ImportError:
-    import couchapp.simplejson as json
+    desktopcouch = None
+
 
 from couchapp import clone_app
 from couchapp.errors import ResourceNotFound, AppError, BulkSaveError
@@ -38,7 +40,7 @@ def init(conf, path, *args, **opts):
 
 def push(conf, path, *args, **opts):
     export = opts.get('export', False)
-    atomic = opts.get('no_atomic', False)
+    noatomic = opts.get('no_atomic', False)
     browse = opts.get('browse', False)
     force = opts.get('force', False)
     dest = None
@@ -72,7 +74,7 @@ def push(conf, path, *args, **opts):
     dbs = conf.get_dbs(dest)
     
     hook(conf, doc_path, "pre-push", dbs=dbs)    
-    doc.push(dbs, atomic, browse, force)
+    doc.push(dbs, noatomic, browse, force)
     hook(conf, doc_path, "post-push", dbs=dbs)
     
     docspath = os.path.join(doc_path, '_docs')
@@ -104,9 +106,9 @@ def pushapps(conf, source, dest, *args, **opts):
             docs.append([doc.doc() for doc in apps])
             jsonobj = {'docs': docs}
             if opts.get('output') is not None:
-                util.write_json(opts.get('output'), json.dumps(jsonobj))
+                util.write_json(opts.get('output'), util.json.dumps(jsonobj))
             else:
-                print json.dumps(jsonobj)
+                print util.json.dumps(jsonobj)
             return 0
         else:
             for db in dbs:
@@ -140,7 +142,6 @@ def pushdocs(conf, source, dest, *args, **opts):
             if d.endswith(".json"):
                 doc = util.read_json(docdir)
                 docid, ext = os.path.splitext(d)
-                
                 doc.setdefault('_id', docid)
                 doc.setdefault('couchapp', {})
                 if export or not noatomic:
@@ -149,7 +150,7 @@ def pushdocs(conf, source, dest, *args, **opts):
                     for db in dbs:
                         db.save_doc(doc, force_update=True)
         else:
-            doc = document(docdir)
+            doc = document(docdir, is_ddoc=False)
             if export or not noatomic:
                 docs.append(doc)
             else:
@@ -164,9 +165,9 @@ def pushdocs(conf, source, dest, *args, **opts):
                     docs1.append(doc)
             jsonobj = {'docs': docs}
             if opts.get('output') is not None:
-                util.write_json(opts.get('output'), json.dumps(jsonobj))
+                util.write_json(opts.get('output'), util.json.dumps(jsonobj))
             else:
-                print json.dumps(jsonobj)
+                print util.json.dumps(jsonobj)
         else:
             for db in dbs:
                 docs1 = []
@@ -272,7 +273,29 @@ def vendor(conf, path, *args, **opts):
         vendor_update(conf, dest, vendorname, *args, **opts)
         hook(conf, dest, "pre-vendor", name=vendorname, action="update")
     return 0
-   
+
+
+def browse(conf, path, *args, **opts):
+    dest = None
+    doc_path = None
+    if len(args) < 2:
+        doc_path = path
+        if args:
+            dest = args[0]
+    else:
+        doc_path = os.path.normpath(os.path.join(os.getcwd(), args[0]))
+        dest = args[1]
+    if doc_path is None:
+        raise AppError("You aren't in a couchapp.")
+    
+    conf.update(doc_path)
+
+    doc = document(doc_path, create=False, 
+                        docid=opts.get('docid'))
+
+    dbs = conf.get_dbs(dest)
+    doc.browse(dbs)
+
 def version(conf, *args, **opts):
     from couchapp import __version__
     
@@ -320,6 +343,7 @@ def print_option(opt):
         print "--%s%s\t %s" % (opt[1], default, opt[3])
     
 globalopts = [
+    ('d', 'debug', None, "debug mode"),
     ('h', 'help', None, "display help and exit"),
     ('', 'version', None, "display version and exit"),
     ('v', 'verbose', None, "enable additionnal output"),
@@ -363,6 +387,10 @@ table = {
         (vendor,
         [("f", 'force', False, "force install or update")],
         "[OPTION]...[-f] install|update [COUCHAPPDIR] SOURCE"),
+    "browse":
+        (browse,
+        [],
+        "[COUCHAPPDIR] DEST"),
     "help":
         (usage, [], ""),
     "version":
