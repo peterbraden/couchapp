@@ -1,8 +1,7 @@
 # CouchApp: Standalone CouchDB Application Development Made Simple
 
-CouchApp is designed to structure standalone CouchDB application development for maximum application portability.
-
-CouchApp is a set of scripts and a [jQuery](http://jquery.com) plugin designed  to bring clarity and order to the freedom of [CouchDB](http://couchdb.org)'s document-based approach.
+CouchDB can serve web applications straight from the database. CouchApp is a set of tools and sane defaults for
+creating a CouchDB application.
 
 ### Write apps using just JavaScript and HTML
 
